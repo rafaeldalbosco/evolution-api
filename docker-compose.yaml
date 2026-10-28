@@ -23,9 +23,17 @@ services:
   frontend:
     container_name: evolution_frontend
     image: evoapicloud/evolution-manager:latest
+    entrypoint: /bin/sh
+    command: >
+      -c "
+      if [ -f /etc/nginx/conf.d/nginx.conf ]; then
+        sed -i 's/ must-revalidate//g' /etc/nginx/conf.d/nginx.conf;
+      fi &&
+      nginx -g 'daemon off;'
+      "
     restart: always
     ports:
-      - "3000:80"
+      - "3200:80"
     networks:
       - evolution-net
 

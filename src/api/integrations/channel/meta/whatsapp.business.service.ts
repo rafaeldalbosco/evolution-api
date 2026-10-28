@@ -32,6 +32,9 @@ import FormData from 'form-data';
 import mimeTypes from 'mime-types';
 import { join } from 'path';
 
+const TEMPLATE_CACHE_MS = 10 * 60 * 1000;
+const templateCache = new Map<string, { at: number; components: any[] }>();
+
 export class BusinessStartupService extends ChannelStartupService {
   constructor(
     public readonly configService: ConfigService,
@@ -73,6 +76,59 @@ export class BusinessStartupService extends ChannelStartupService {
 
   private isMediaMessage(message: any) {
     return message.document || message.image || message.audio || message.video;
+  }
+
+  // Texto que o contato recebeu (cabeçalho, corpo com as variáveis, rodapé e botões): é o que o Chatwoot mostra.
+  // null = template não encontrado no WABA; quem chama cai no nome do template.
+  private async renderTemplate(template: any): Promise<string | null> {
+    const key = `${this.instance.businessId}|${template.name}|${template.language}`;
+    let cached = templateCache.get(key);
+    if (!cached || Date.now() - cached.at > TEMPLATE_CACHE_MS) {
+      try {
+        const { URL, VERSION } = this.configService.get<WaBusiness>('WA_BUSINESS');
+        const { data } = await axios.get(`${URL}/${VERSION}/${this.instance.businessId}/message_templates`, {
+          headers: { Authorization: `Bearer ${this.token}` },
+          params: { name: template.name, fields: 'name,language,components', limit: 100 },
+        });
+        const found =
+          data?.data?.find((t: any) => t.name === template.name && t.language === template.language) ??
+          data?.data?.find((t: any) => t.name === template.name);
+        if (!found) return null;
+        cached = { at: Date.now(), components: found.components ?? [] };
+        templateCache.set(key, cached);
+      } catch (error) {
+        this.logger.warn(`template ${template.name}: ${error?.response?.data?.error?.message ?? error}`);
+        return null;
+      }
+    }
+
+    const sent: any[] = template.components ?? [];
+    const params = (type: string): any[] => sent.find((c) => c.type?.toLowerCase() === type)?.parameters ?? [];
+    const fill = (text: string, values: any[]) =>
+      (text ?? '').replace(/\{\{\s*(\w+)\s*\}\}/g, (match, k) => {
+        const value = /^\d+$/.test(k) ? values[Number(k) - 1] : values.find((v) => v.parameter_name === k);
+        return value?.text ?? match;
+      });
+
+    const parts: string[] = [];
+    for (const component of cached.components) {
+      if (component.type === 'HEADER') {
+        if (component.format === 'TEXT') {
+          parts.push(`*${fill(component.text, params('header'))}*`);
+        } else {
+          const media = params('header')[0];
+          const file = media?.[media?.type]?.filename;
+          parts.push(`📎 ${file || component.format.toLowerCase()}`);
+        }
+      } else if (component.type === 'BODY') {
+        parts.push(fill(component.text, params('body')));
+      } else if (component.type === 'FOOTER') {
+        parts.push(`_${component.text}_`);
+      } else if (component.type === 'BUTTONS') {
+        parts.push(component.buttons.map((b: any) => `[${b.text}]`).join(' '));
+      }
+    }
+    return parts.join('\n\n') || null;
   }
 
   private async post(message: any, params: string) {
@@ -333,8 +389,8 @@ export class BusinessStartupService extends ChannelStartupService {
       };
     } else {
       content.contactsArrayMessage = {
-        displayName: `${message.length} contacts`,
-        contacts: message.map((contact) => {
+        displayName: `${message.contacts.length} contacts`,
+        contacts: message.contacts.map((contact) => {
           return {
             displayName: contact.name.formatted_name,
             vcard: vcard(contact),
@@ -387,7 +443,7 @@ export class BusinessStartupService extends ChannelStartupService {
       let messageRaw: any;
       let pushName: any;
 
-      if (received.contacts) pushName = received.contacts[0].profile.name;
+      if (received.contacts) pushName = received.contacts[0]?.profile?.name;
 
       if (received.messages) {
         const message = received.messages[0]; // Añadir esta línea para definir message
@@ -702,7 +758,7 @@ export class BusinessStartupService extends ChannelStartupService {
         });
 
         const contactRaw: any = {
-          remoteJid: received.contacts[0].profile.phone,
+          remoteJid: received.contacts[0]?.profile?.phone,
           pushName,
           // profilePicUrl: '',
           instanceId: this.instanceId,
@@ -714,7 +770,7 @@ export class BusinessStartupService extends ChannelStartupService {
 
         if (contact) {
           const contactRaw: any = {
-            remoteJid: received.contacts[0].profile.phone,
+            remoteJid: received.contacts[0]?.profile?.phone,
             pushName,
             // profilePicUrl: '',
             instanceId: this.instanceId,
@@ -1122,7 +1178,9 @@ export class BusinessStartupService extends ChannelStartupService {
             },
           };
           quoted ? (content.context = { message_id: quoted.id }) : content;
-          message = { conversation: `▶️${message['template']['name']}◀️` };
+          message = {
+            conversation: (await this.renderTemplate(message['template'])) ?? `▶️${message['template']['name']}◀️`,
+          };
           return await this.post(content, 'messages');
         }
       })();
@@ -1534,7 +1592,7 @@ export class BusinessStartupService extends ChannelStartupService {
     return res;
   }
 
-  public async contactMessage(data: SendContactDto) {
+  public async contactMessage(data: SendContactDto, isIntegration = false) {
     const message: any = {};
 
     const vcard = (contact: ContactMessage) => {
@@ -1599,6 +1657,7 @@ export class BusinessStartupService extends ChannelStartupService {
         mentionsEveryOne: data?.mentionsEveryOne,
         mentioned: data?.mentioned,
       },
+      isIntegration,
     );
   }
 

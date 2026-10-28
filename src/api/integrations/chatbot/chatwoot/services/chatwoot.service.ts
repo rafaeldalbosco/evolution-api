@@ -943,20 +943,25 @@ export class ChatwootService {
 
     const sourceReplyId = quotedMsg?.chatwootMessageId || null;
 
+    const data: any = {
+      content: content,
+      message_type: messageType,
+      attachments: attachments,
+      private: privateMessage || false,
+      source_id: sourceId,
+      content_attributes: {
+        ...replyToIds,
+      },
+      source_reply_id: sourceReplyId ? sourceReplyId.toString() : null,
+    };
+    // Contato compartilhado: o Chatwoot do Átrio mostra o cartão (Salvar / Chamar) além do texto.
+    const contacts = this.sharedContacts(messageBody?.message);
+    if (contacts.length) data.contacts = contacts;
+
     const message = await client.messages.create({
       accountId: this.provider.accountId,
       conversationId: conversationId,
-      data: {
-        content: content,
-        message_type: messageType,
-        attachments: attachments,
-        private: privateMessage || false,
-        source_id: sourceId,
-        content_attributes: {
-          ...replyToIds,
-        },
-        source_reply_id: sourceReplyId ? sourceReplyId.toString() : null,
-      },
+      data,
     });
 
     if (!message) {
@@ -965,6 +970,17 @@ export class ChatwootService {
     }
 
     return message;
+  }
+
+  private sharedContacts(msg: any): { name: string; phone_number: string }[] {
+    const cards = msg?.contactMessage ? [msg.contactMessage] : (msg?.contactsArrayMessage?.contacts ?? []);
+    return cards.flatMap((card) => {
+      const vcard: string = card?.vcard || '';
+      const name = card?.displayName || vcard.match(/^FN:(.*)$/m)?.[1]?.trim() || '';
+      return [...vcard.matchAll(/^.*TEL[^:\n]*:(.*)$/gm)]
+        .map((tel) => ({ name, phone_number: `+${(tel[0].match(/waid=(\d+)/)?.[1] || tel[1]).replace(/\D/g, '')}` }))
+        .filter((contact) => contact.phone_number.length > 1);
+    });
   }
 
   public async getOpenConversationByContact(
@@ -1465,7 +1481,34 @@ export class ChatwootService {
         }
 
         for (const message of body.conversation.messages) {
-          if (message.attachments && message.attachments.length > 0) {
+          const sharedContacts = (message.attachments || []).filter((attachment) => attachment.file_type === 'contact');
+          if (sharedContacts.length > 0) {
+            const messageSent = await waInstance?.contactMessage(
+              {
+                number: chatId,
+                contact: sharedContacts.map((attachment) => ({
+                  fullName: attachment.meta?.first_name || attachment.fallback_title,
+                  phoneNumber: attachment.fallback_title,
+                  wuid: attachment.fallback_title.replace(/\D/g, ''),
+                })),
+              },
+              true,
+            );
+            if (!messageSent && body.conversation?.id) {
+              this.onSendMessageError(instance, body.conversation?.id);
+            }
+
+            await this.updateChatwootMessageId(
+              { ...messageSent },
+              {
+                messageId: body.id,
+                inboxId: body.inbox?.id,
+                conversationId: body.conversation?.id,
+                contactInboxSourceId: body.conversation?.contact_inbox?.source_id,
+              },
+              instance,
+            );
+          } else if (message.attachments && message.attachments.length > 0) {
             for (const attachment of message.attachments) {
               if (!messageReceived) {
                 formatText = null;
