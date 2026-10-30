@@ -820,6 +820,24 @@ export class ChatwootService {
           return null;
         }
 
+        // Template enviado pelo Átrio (notificação) só entra no histórico: vai para a última conversa sem mudar
+        // o status ou, sem nenhuma, abre uma já resolvida, para não cair na fila e fechar depois por inatividade.
+        if (body.somenteHistorico) {
+          const ultimaConversa = contactConversations.payload
+            .filter((conversation) => conversation.inbox_id == filterInbox.id)
+            .sort((a, b) => b.id - a.id)[0];
+          const conversationId =
+            ultimaConversa?.id ??
+            (
+              await client.conversations.create({
+                accountId: this.provider.accountId,
+                data: { contact_id: contactId.toString(), inbox_id: filterInbox.id.toString(), status: 'resolved' },
+              })
+            )?.id;
+          if (conversationId) this.cache.set(cacheKey, conversationId, 1800);
+          return conversationId ?? null;
+        }
+
         let inboxConversation = contactConversations.payload.find(
           (conversation) => conversation.inbox_id == filterInbox.id,
         );

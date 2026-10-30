@@ -1209,7 +1209,8 @@ export class BusinessStartupService extends ChannelStartupService {
         this.chatwootService.eventWhatsapp(
           Events.SEND_MESSAGE,
           { instanceName: this.instance.name, instanceId: this.instanceId },
-          messageRaw,
+          // Fora do messageRaw: ele é gravado no Prisma, que recusa campo desconhecido.
+          content.type === 'template' ? { ...messageRaw, somenteHistorico: true } : messageRaw,
         );
       }
 
@@ -1332,6 +1333,14 @@ export class BusinessStartupService extends ChannelStartupService {
         mimetype = mimeTypes.lookup(mediaMessage.fileName);
         const id = await this.getIdMedia(prepareMedia);
         prepareMedia.id = id;
+        prepareMedia.type = 'id';
+      }
+
+      // A Meta recusa documento XML (nem por link): sobe o arquivo como texto, mantendo o nome .xml.
+      if (mediaMessage.mediatype === 'document' && String(mimetype).endsWith('/xml')) {
+        mimetype = 'text/plain';
+        prepareMedia.mimetype = mimetype;
+        prepareMedia.id = await this.getIdMedia(prepareMedia);
         prepareMedia.type = 'id';
       }
 
