@@ -9,6 +9,7 @@ import { WAMonitoringService } from '@api/services/monitor.service';
 import { Events } from '@api/types/wa.types';
 import { Chatwoot, ConfigService, Database, HttpServer } from '@config/env.config';
 import { Logger } from '@config/logger.config';
+import { BadRequestException } from '@exceptions';
 import ChatwootClient, {
   ChatwootAPIConfig,
   contact,
@@ -2708,6 +2709,53 @@ export class ChatwootService {
     } catch (error) {
       this.logger.error(`Error on update avatar in recent conversations: ${error.toString()}`);
     }
+  }
+
+  /**
+   * Átrio: leva para a caixa as mensagens dos últimos `days` dias já salvas no banco da Evolution (histórico do
+   * pareamento, com DATABASE_SAVE_DATA_HISTORIC, e as que chegaram antes de a caixa existir). O que já está no
+   * Chatwoot (source_id WAID:<id>) fica de fora. Responde na hora e importa em segundo plano.
+   */
+  public async importHistoryFromDatabase(instance: InstanceDto, days: number) {
+    if (!this.isImportHistoryAvailable()) {
+      throw new BadRequestException('CHATWOOT_IMPORT_DATABASE_CONNECTION_URI is not configured');
+    }
+    const waInstance = this.waMonitor.waInstances[instance.instanceName];
+    if (!waInstance) {
+      throw new BadRequestException(`instance ${instance.instanceName} not found`);
+    }
+    const provider = await this.getProvider(instance);
+    if (!provider?.enabled) {
+      throw new BadRequestException('instance is not linked to Chatwoot');
+    }
+    const inbox = await this.getInbox(instance);
+    if (!inbox) {
+      throw new BadRequestException('Chatwoot inbox not found');
+    }
+
+    const messages = (
+      await this.prismaRepository.message.findMany({
+        where: {
+          instanceId: waInstance.instanceId,
+          messageTimestamp: { gte: dayjs().subtract(days, 'days').unix() },
+        },
+      })
+    ).filter((m: any) => m.message && m.key && !chatwootImport.isIgnorePhoneNumber(m.key?.remoteJid));
+
+    // Mesmo buffer que o pareamento usa: não roda junto de outra importação da mesma instância.
+    if ((chatwootImport as any).historyMessages?.get(instance.instanceName)?.length) {
+      throw new BadRequestException('an import is already running for this instance');
+    }
+    this.addHistoryMessages(instance, messages as any);
+    chatwootImport
+      .importHistoryMessages(instance, this, inbox, provider)
+      .then((total) => {
+        this.logger.info(`[${instance.instanceName}] history import: ${total} of ${messages.length} messages`);
+        waInstance.clearCacheChatwoot();
+      })
+      .catch((e) => this.logger.error(`[${instance.instanceName}] history import failed: ${e}`));
+
+    return { days, messages: messages.length };
   }
 
   public async syncLostMessages(

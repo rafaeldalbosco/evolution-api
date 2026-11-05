@@ -81,4 +81,15 @@ export class ChatwootController {
 
     return this.chatwootService.receiveWebhook(instance, data);
   }
+
+  public async importHistory(instance: InstanceDto, days: unknown) {
+    if (!this.configService.get<Chatwoot>('CHATWOOT').ENABLED) throw new BadRequestException('Chatwoot is disabled');
+
+    const dias = Number(days);
+    if (!Number.isInteger(dias) || dias < 1 || dias > 3650) {
+      throw new BadRequestException('days must be an integer between 1 and 3650');
+    }
+
+    return this.chatwootService.importHistoryFromDatabase(instance, dias);
+  }
 }

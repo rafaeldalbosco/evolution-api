@@ -30,6 +30,17 @@ export class ChatwootRouter extends RouterBroker {
 
         res.status(HttpStatus.OK).json(response);
       })
+      // Átrio: importa para a caixa o histórico já salvo no banco (body: { days }).
+      .post(this.routerPath('importHistory'), ...guards, async (req, res) => {
+        const response = await this.dataValidate<InstanceDto>({
+          request: req,
+          schema: instanceSchema,
+          ClassRef: InstanceDto,
+          execute: (instance) => chatwootController.importHistory(instance, req.body?.days),
+        });
+
+        res.status(HttpStatus.OK).json(response);
+      })
       .post(this.routerPath('webhook'), async (req, res) => {
         const response = await this.dataValidate<InstanceDto>({
           request: req,
