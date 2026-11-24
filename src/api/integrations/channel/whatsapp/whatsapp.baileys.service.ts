@@ -2424,6 +2424,13 @@ export class BaileysStartupService extends ChannelStartupService {
 
       const messageRaw = this.prepareMessage(messageSent);
 
+      // Chat já endereçado por LID (lead que mandou mensagem antes) volta como @lid, sem número:
+      // leva o número enviado como alternativo para o Chatwoot não abrir um segundo contato/conversa.
+      if (messageRaw.key.remoteJid?.endsWith('@lid') && !messageRaw.key.remoteJidAlt && !number.includes('@')) {
+        messageRaw.key.remoteJidAlt = `${number.replace(/\D/g, '')}@s.whatsapp.net`;
+        messageRaw.key.addressingMode = 'lid';
+      }
+
       const isMedia =
         messageSent?.message?.imageMessage ||
         messageSent?.message?.videoMessage ||
